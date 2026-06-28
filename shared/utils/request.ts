@@ -1,11 +1,25 @@
 /**
- * 封装 $fetch 无重试请求
+ * Wrapper around $fetch with no retry.
  */
 export const request = $fetch.create({
   retry: 0,
   method: 'GET',
-  async onResponse({ request, response, options, error }) {
-    // 需要注意的是，这里有可能是客户端和服务器端调用
+  async onRequest({ options }) {
+    if (typeof window === 'undefined') {
+      return;
+    }
+
+    const adminKey = window.localStorage.getItem('wechat-exporter:admin-key');
+    if (!adminKey) {
+      return;
+    }
+
+    const headers = new Headers(options.headers as HeadersInit);
+    if (!headers.has('X-Admin-Key')) {
+      headers.set('X-Admin-Key', adminKey);
+    }
+    options.headers = headers;
   },
+  async onResponse({ request, response, options, error }) {},
   async onResponseError({ request, response, options, error }) {},
 });

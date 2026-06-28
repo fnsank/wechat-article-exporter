@@ -1,13 +1,10 @@
 <script setup lang="ts">
 import { formatDistance } from 'date-fns';
 import { request } from '#shared/utils/request';
-import LoginModal from '~/components/modal/Login.vue';
 import StorageUsage from '~/components/StorageUsage.vue';
 import { IMAGE_PROXY } from '~/config';
-import type { LogoutResponse } from '~/types/types';
 
 const loginAccount = useLoginAccount();
-const modal = useModal();
 
 const now = ref(new Date());
 const distance = computed(() => {
@@ -72,20 +69,22 @@ const warning = computed(() => {
 });
 
 function login() {
-  modal.open(LoginModal);
+  navigateTo('/admin');
 }
 
 const logoutBtnLoading = ref(false);
 
 async function logout() {
   logoutBtnLoading.value = true;
-  const { statusCode, statusText } = await request<LogoutResponse>('/api/web/mp/logout');
-  // 接口调用失败时，提示消息，但是不阻止前端退出
-  if (statusCode !== 200) {
-    alert(statusText);
+  try {
+    await request('/api/admin/wechat-session', {
+      method: 'DELETE',
+    });
+  } finally {
+    loginAccount.value = null;
+    logoutBtnLoading.value = false;
+    await navigateTo('/admin');
   }
-  loginAccount.value = null;
-  logoutBtnLoading.value = false;
 }
 
 let timer: number;

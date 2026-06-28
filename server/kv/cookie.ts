@@ -5,6 +5,16 @@ export type CookieKVKey = string;
 export interface CookieKVValue {
   token: string;
   cookies: CookieEntity[];
+  expiresAt?: string;
+}
+
+function getExpirationTtl(expiresAt?: string): number {
+  if (!expiresAt) {
+    return 60 * 60 * 24 * 4;
+  }
+
+  const seconds = Math.floor((Date.parse(expiresAt) - Date.now()) / 1000);
+  return Math.max(seconds, 60);
 }
 
 export async function setMpCookie(key: CookieKVKey, data: CookieKVValue): Promise<boolean> {
@@ -12,7 +22,7 @@ export async function setMpCookie(key: CookieKVKey, data: CookieKVValue): Promis
   try {
     await kv.set<CookieKVValue>(`cookie:${key}`, data, {
       // https://developers.cloudflare.com/kv/api/write-key-value-pairs/#expiring-keys
-      expirationTtl: 60 * 60 * 24 * 4, // 4 days
+      expirationTtl: getExpirationTtl(data.expiresAt),
     });
     return true;
   } catch (err) {

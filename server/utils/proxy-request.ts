@@ -2,6 +2,7 @@ import dayjs from 'dayjs';
 import { H3Event, parseCookies } from 'h3';
 import { v4 as uuidv4 } from 'uuid';
 import { isDev, USER_AGENT } from '~/config';
+import { getCurrentWechatSession, updateCurrentWechatSession } from '~/server/kv/wechat-session';
 import { RequestOptions } from '~/server/types';
 import { cookieStore, getCookieFromStore } from '~/server/utils/CookieStore';
 import { logRequest, logResponse } from '~/server/utils/logger';
@@ -120,7 +121,7 @@ export async function proxyMpRequest(options: RequestOptions) {
   // 这里是否需要执行？
   // 更新 CookieStore 中的 cookie
   else {
-    // updateCookies(options.event, mpResponse.headers.getSetCookie());
+    await updateCookies(options.event, mpResponse.headers.getSetCookie());
   }
 
   // 构造返回给客户端的响应
@@ -153,9 +154,26 @@ export function getAuthKeyFromRequest(event: H3Event): string {
   return authKey;
 }
 
-// function updateCookies(event: H3Event, cookies: string[]): void {
-//   const authKey = getAuthKeyFromRequest(event);
-//   if (authKey) {
-//     cookieStore.updateCookie(authKey, cookies);
-//   }
-// }
+async function getWritableAuthKeyFromRequest(event: H3Event): Promise<string | null> {
+  const authKey = getAuthKeyFromRequest(event);
+  if (authKey) {
+    return authKey;
+  }
+
+  if (getRequestHeader(event, 'X-API-Key') || getRequestHeader(event, 'X-Admin-Key')) {
+    const session = await getCurrentWechatSession();
+    return session?.authKey || null;
+  }
+
+  return null;
+}
+
+async function updateCookies(event: H3Event, cookies: string[]): Promise<void> {
+  const authKey = await getWritableAuthKeyFromRequest(event);
+  if (!authKey || cookies.length === 0) {
+    return;
+  }
+
+  const expiresAt = await cookieStore.updateCookie(authKey, cookies);
+  await updateCurrentWechatSession(authKey, expiresAt || undefined);
+}

@@ -7,6 +7,8 @@ export default defineNuxtConfig({
   modules: ['@vueuse/nuxt', '@nuxt/ui', 'nuxt-monaco-editor', '@sentry/nuxt/module', 'nuxt-umami'],
   ssr: false,
   runtimeConfig: {
+    adminKey: process.env.ADMIN_KEY,
+    apiKey: process.env.API_KEY,
     public: {
       aggridLicense: process.env.NUXT_AGGRID_LICENSE,
       sentry: {

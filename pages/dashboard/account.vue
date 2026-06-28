@@ -17,7 +17,6 @@ import GlobalSearchAccountDialog from '~/components/global/SearchAccountDialog.v
 import GridAccountActions from '~/components/grid/AccountActions.vue';
 import GridLoadProgress from '~/components/grid/LoadProgress.vue';
 import ConfirmModal from '~/components/modal/Confirm.vue';
-import LoginModal from '~/components/modal/Login.vue';
 import toastFactory from '~/composables/toast';
 import useLoginCheck from '~/composables/useLoginCheck';
 import { IMAGE_PROXY, websiteName } from '~/config';
@@ -161,7 +160,7 @@ async function loadAccountArticle(account: MpAccount, loadMore = true) {
       isSyncing.value = false;
 
       if (e.message === 'session expired') {
-        modal.open(LoginModal);
+        navigateTo('/admin');
       }
       reject(e);
     });

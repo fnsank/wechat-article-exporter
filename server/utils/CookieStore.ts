@@ -1,5 +1,7 @@
 import { H3Event, parseCookies } from 'h3';
 import { CookieKVValue, getMpCookie, setMpCookie } from '~/server/kv/cookie';
+import { getCurrentWechatSession, isCurrentWechatSessionExpired } from '~/server/kv/wechat-session';
+import { requireAdminKey, requireApiKey } from '~/server/utils/auth';
 
 // 表示一条 set-cookie 记录的解析结果
 export type CookieEntity = Record<string, string | number>;
@@ -32,6 +34,7 @@ export class AccountCookie {
     return {
       token: this._token,
       cookies: this._cookie,
+      expiresAt: this.expiresAt,
     };
   }
 
@@ -41,6 +44,29 @@ export class AccountCookie {
 
   public get token() {
     return this._token;
+  }
+
+  public get expiresAt(): string {
+    const preferredCookieNames = ['slave_sid', 'data_ticket', 'bizuin', 'data_bizuin', 'slave_bizuin', 'rand_info'];
+    for (const name of preferredCookieNames) {
+      const timestamp = this.get(name)?.expires_timestamp;
+      if (typeof timestamp === 'number' && timestamp > Date.now()) {
+        return new Date(timestamp).toISOString();
+      }
+    }
+
+    const twoWeeksFromNow = Date.now() + 1000 * 60 * 60 * 24 * 14;
+    const futureTimestamps = this._cookie
+      .map(cookie => cookie.expires_timestamp)
+      .filter((timestamp): timestamp is number => typeof timestamp === 'number')
+      .filter(timestamp => timestamp > Date.now() && timestamp < twoWeeksFromNow)
+      .sort((a, b) => a - b);
+
+    if (futureTimestamps.length > 0) {
+      return new Date(futureTimestamps[0]).toISOString();
+    }
+
+    return new Date(Date.now() + 1000 * 60 * 60 * 24 * 4).toISOString();
   }
 
   // 根据 cookie 中的 expires 来确定是否已过期
@@ -167,6 +193,32 @@ class CookieStore {
     return await setMpCookie(authKey, accountCookie.toJSON());
   }
 
+  async updateCookie(authKey: string, cookies: string[]): Promise<string | null> {
+    if (cookies.length === 0) {
+      return null;
+    }
+
+    const accountCookie = await this.getAccountCookie(authKey);
+    if (!accountCookie) {
+      return null;
+    }
+
+    const cookieMap = new Map<string, CookieEntity>();
+    for (const cookie of accountCookie.toJSON().cookies) {
+      cookieMap.set(cookie.name as string, cookie);
+    }
+    for (const cookie of AccountCookie.parse(cookies)) {
+      cookieMap.set(cookie.name as string, cookie);
+    }
+
+    const updatedAccountCookie = AccountCookie.create(accountCookie.token, Array.from(cookieMap.values()));
+    this.store.delete(authKey);
+    this.evictIfNeeded();
+    this.store.set(authKey, updatedAccountCookie);
+    await setMpCookie(authKey, updatedAccountCookie.toJSON());
+    return updatedAccountCookie.expiresAt;
+  }
+
   /**
    * 移除用户的 cookie（用于登出等场景）
    * @param authKey
@@ -203,6 +255,15 @@ class CookieStore {
     return accountCookie.token;
   }
 
+  async getExpiresAt(authKey: string): Promise<string | null> {
+    const accountCookie = await this.getAccountCookie(authKey);
+    if (!accountCookie) {
+      return null;
+    }
+
+    return accountCookie.expiresAt;
+  }
+
   /**
    * 转换为 json 格式，方便存储与传输
    * 返回一个对象，键为 uuid，值为解析后的 cookie 对象
@@ -226,6 +287,24 @@ export const cookieStore = new CookieStore();
  */
 export async function getCookieFromStore(event: H3Event): Promise<string | null> {
   let cookie: string | null = null;
+
+  if (getRequestHeader(event, 'X-API-Key') || getRequestHeader(event, 'X-Admin-Key')) {
+    if (getRequestHeader(event, 'X-API-Key')) {
+      requireApiKey(event);
+    } else {
+      requireAdminKey(event);
+    }
+
+    const session = await getCurrentWechatSession();
+    if (!session || isCurrentWechatSessionExpired(session)) {
+      return null;
+    }
+
+    cookie = await cookieStore.getCookie(session.authKey);
+    if (cookie) {
+      return cookie;
+    }
+  }
 
   // 优先根据自定义的 X-Auth-Key 检索
   let authKey = getRequestHeader(event, 'X-Auth-Key');
@@ -257,6 +336,24 @@ export async function getCookieFromStore(event: H3Event): Promise<string | null>
  */
 export async function getTokenFromStore(event: H3Event): Promise<string | null> {
   let token: string | null = null;
+
+  if (getRequestHeader(event, 'X-API-Key') || getRequestHeader(event, 'X-Admin-Key')) {
+    if (getRequestHeader(event, 'X-API-Key')) {
+      requireApiKey(event);
+    } else {
+      requireAdminKey(event);
+    }
+
+    const session = await getCurrentWechatSession();
+    if (!session || isCurrentWechatSessionExpired(session)) {
+      return null;
+    }
+
+    token = await cookieStore.getToken(session.authKey);
+    if (token) {
+      return token;
+    }
+  }
 
   // 优先根据自定义的 X-Auth-Key 检索
   let authKey = getRequestHeader(event, 'X-Auth-Key');
