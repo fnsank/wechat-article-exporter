@@ -43,7 +43,12 @@ export default defineNuxtConfig({
     minify: process.env.NODE_ENV === 'production',
     storage: {
       kv: {
-        driver: process.env.NITRO_KV_DRIVER || 'memory',
+        // 当以 cloudflare_module preset 构建时，自动使用 cloudflare-kv-binding driver，
+        // 避免遗忘在 CF Dashboard 设 NITRO_KV_DRIVER 而回退到易失的 memory driver。
+        // 其它 preset（Vercel/Docker/dev）仍然由 NITRO_KV_DRIVER 环境变量控制。
+        driver:
+          process.env.NITRO_KV_DRIVER ||
+          (process.env.NITRO_PRESET === 'cloudflare_module' ? 'cloudflare-kv-binding' : 'memory'),
         base: process.env.NITRO_KV_BASE,
         // upstash driver 凭据：优先读 Vercel Marketplace 集成注入的 KV_REST_API_* 变量，
         // 回退到 Upstash 原生命名 UPSTASH_REDIS_REST_*
