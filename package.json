@@ -6,7 +6,7 @@
     "debug": "nuxt dev --inspect",
     "dev": "nuxt dev",
     "build": "nuxt build",
-    "build:cf": "NITRO_PRESET=cloudflare_module nuxt build",
+    "build:cf": "NODE_OPTIONS=--max-old-space-size=4096 NITRO_PRESET=cloudflare_module nuxt build",
     "deploy:cf": "yarn build:cf && npx wrangler deploy --cwd .output",
     "preview:cf": "yarn build:cf && npx wrangler dev --cwd .output --test-scheduled",
     "preview": "NITRO_PRESET=cloudflare_pages nuxt build && npx wrangler --cwd dist pages dev",
