@@ -49,6 +49,34 @@ export default defineNuxtConfig({
         // 回退到 Upstash 原生命名 UPSTASH_REDIS_REST_*
         url: process.env.KV_REST_API_URL || process.env.UPSTASH_REDIS_REST_URL,
         token: process.env.KV_REST_API_TOKEN || process.env.UPSTASH_REDIS_REST_TOKEN,
+        // cloudflare-kv-binding driver：读取 CF 上名为 KV 的 Workers KV binding
+        binding: 'KV',
+      },
+    },
+    // Nitro 任务系统，用于定义 scheduled task；cloudflare_module preset 会
+    // 把 scheduledTasks 自动写入 wrangler.json 的 triggers.crons 配置
+    experimental: {
+      tasks: true,
+    },
+    scheduledTasks: {
+      // 每 5 分钟触发一次微信登录心跳，保持 cookie 不被微信过期
+      '*/5 * * * *': ['wechat:heartbeat'],
+    },
+    cloudflare: {
+      // 由 nitro 在 build 后自动生成 .output/wrangler.json 并注入 triggers/kv_namespaces
+      deployConfig: true,
+      nodeCompat: true,
+      wrangler: {
+        name: 'wechat-article-exporter',
+        kv_namespaces: [
+          {
+            binding: 'KV',
+            id: process.env.CLOUDFLARE_KV_ID || 'placeholder-set-in-cf-dashboard',
+          },
+        ],
+        triggers: {
+          crons: ['*/5 * * * *'],
+        },
       },
     },
   },
