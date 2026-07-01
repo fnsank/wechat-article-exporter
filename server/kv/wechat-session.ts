@@ -23,9 +23,12 @@ export function isCurrentWechatSessionExpired(session: CurrentWechatSession): bo
 }
 
 export async function setCurrentWechatSession(session: CurrentWechatSession): Promise<void> {
+  // 至少保留 4 天，避免与微信侧 cookie 过期时间不匹配（后者常仅 2~4 小时）导致
+  // 用户短暂离开回来就要重登
+  const MIN_TTL_SECONDS = 60 * 60 * 24 * 4;
   const kv = useStorage('kv');
   await kv.set<CurrentWechatSession>(CURRENT_SESSION_KEY, session, {
-    ttl: Math.max(Math.floor((Date.parse(session.expiresAt) - Date.now()) / 1000), 60),
+    ttl: Math.max(Math.floor((Date.parse(session.expiresAt) - Date.now()) / 1000), MIN_TTL_SECONDS),
   });
 }
 

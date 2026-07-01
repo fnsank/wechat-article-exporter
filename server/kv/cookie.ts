@@ -9,12 +9,15 @@ export interface CookieKVValue {
 }
 
 function getExpirationTtl(expiresAt?: string): number {
+  // 最小 TTL：无论微信侧 cookie 声明多短（slave_sid 等常是 2~4 小时），
+  // 都在 KV 中至少保留 4 天，避免用户短暂离开回来就要重登。
+  // 若微信 cookie 声明的过期时间比 4 天还长，则以微信为准。
+  const MIN_TTL_SECONDS = 60 * 60 * 24 * 4;
   if (!expiresAt) {
-    return 60 * 60 * 24 * 4;
+    return MIN_TTL_SECONDS;
   }
-
   const seconds = Math.floor((Date.parse(expiresAt) - Date.now()) / 1000);
-  return Math.max(seconds, 60);
+  return Math.max(seconds, MIN_TTL_SECONDS);
 }
 
 export async function setMpCookie(key: CookieKVKey, data: CookieKVValue): Promise<boolean> {
