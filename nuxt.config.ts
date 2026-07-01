@@ -75,7 +75,11 @@ export default defineNuxtConfig({
         kv_namespaces: [
           {
             binding: 'KV',
-            id: process.env.CLOUDFLARE_KV_ID || 'placeholder-set-in-cf-dashboard',
+            // 默认写死当前 CF 项目的 KV Namespace ID。CF Workers Builds 里的
+            // "Variables" 是 Worker Runtime 变量，Node build 过程读不到 process.env，
+            // 所以之前设了 CLOUDFLARE_KV_ID 也不生效。这里作为默认值，如需切换
+            // KV Namespace，可以在 build shell 里设置 CLOUDFLARE_KV_ID env var 覆盖。
+            id: process.env.CLOUDFLARE_KV_ID || '3dee57bceca74a7094a8f3f72a74dfca',
           },
         ],
         triggers: {
