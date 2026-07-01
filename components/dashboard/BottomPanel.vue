@@ -1,10 +1,12 @@
 <script setup lang="ts">
 import { formatDistance } from 'date-fns';
 import { request } from '#shared/utils/request';
+import LoginModal from '~/components/modal/Login.vue';
 import StorageUsage from '~/components/StorageUsage.vue';
 import { IMAGE_PROXY } from '~/config';
 
 const loginAccount = useLoginAccount();
+const modal = useModal();
 
 const now = ref(new Date());
 const distance = computed(() => {
@@ -69,7 +71,12 @@ const warning = computed(() => {
 });
 
 function login() {
-  navigateTo('/admin');
+  const adminKey = localStorage.getItem('wechat-exporter:admin-key');
+  if (!adminKey) {
+    navigateTo('/admin');
+    return;
+  }
+  modal.open(LoginModal);
 }
 
 const logoutBtnLoading = ref(false);
