@@ -68,9 +68,10 @@ onMounted(() => {
 
 const saveBtnText = ref('保存');
 async function save() {
+  // 更新本地 preferences 后，dashboard 层的 watch 会自动防抖同步到服务端 KV
+  (preferences.value as Preferences).privateProxyList = proxyList.value;
   saveBtnText.value = '保存成功';
   setTimeout(() => {
-    (preferences.value as Preferences).privateProxyList = proxyList.value;
     saveBtnText.value = '保存';
   }, 1000);
 }

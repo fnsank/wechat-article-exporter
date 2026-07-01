@@ -21,8 +21,11 @@
 </template>
 
 <script setup lang="ts">
+import { useDebounceFn } from '@vueuse/core';
+import { request } from '#shared/utils/request';
 import GlobalActions from '~/components/dashboard/Actions.vue';
 import SideBar from '~/components/dashboard/SideBar.vue';
+import type { Preferences } from '~/types/preferences';
 
 type CurrentSession = {
   nickname: string;
@@ -33,6 +36,35 @@ type CurrentSession = {
 
 const authReady = ref(false);
 const loginAccount = useLoginAccount();
+const preferences = usePreferences() as unknown as Ref<Preferences>;
+
+const stopPreferencesWatch = ref<(() => void) | null>(null);
+
+async function hydratePreferences() {
+  try {
+    const resp = await request<{ code: number; data: Preferences | null }>('/api/admin/preferences');
+    if (resp.data) {
+      // 服务端为准，合并到本地（保证类型完整字段）
+      preferences.value = { ...preferences.value, ...resp.data };
+    } else {
+      // 服务端无记录，把本地当前状态推上去作为初始
+      await request('/api/admin/preferences', { method: 'PUT', body: preferences.value });
+    }
+  } catch (e) {
+    // 网络/权限异常时，静默降级为本地 localStorage
+  }
+
+  // hydration 完成后再开启 watch，避免上面赋值触发一次多余的 PUT
+  const savePreferences = useDebounceFn(async (val: Preferences) => {
+    try {
+      await request('/api/admin/preferences', { method: 'PUT', body: val });
+    } catch (e) {
+      // 保存失败静默，用户下次修改会再尝试
+    }
+  }, 500);
+
+  stopPreferencesWatch.value = watch(preferences, val => savePreferences(val), { deep: true });
+}
 
 onMounted(async () => {
   const adminKey = localStorage.getItem('wechat-exporter:admin-key');
@@ -61,6 +93,7 @@ onMounted(async () => {
       loginAccount.value = null;
     }
     authReady.value = true;
+    await hydratePreferences();
   } catch (e: any) {
     // 只有 Admin Key 无效（401）才回登录页；其他错误保持在 dashboard 以便用户看到
     if (e?.statusCode === 401) {
@@ -72,5 +105,9 @@ onMounted(async () => {
       authReady.value = true;
     }
   }
+});
+
+onUnmounted(() => {
+  stopPreferencesWatch.value?.();
 });
 </script>
