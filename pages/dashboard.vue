@@ -49,21 +49,28 @@ onMounted(async () => {
       },
     });
 
-    if (!resp.data || resp.data.expired) {
+    // Admin Key 有效则放行 dashboard；微信会话是否存在只影响 loginAccount，
+    // 未扫码/已过期时由 BottomPanel 提示扫码，不再踢回 /admin
+    if (resp.data && !resp.data.expired) {
+      loginAccount.value = {
+        nickname: resp.data.nickname,
+        avatar: resp.data.avatar,
+        expires: resp.data.expiresAt,
+      };
+    } else {
+      loginAccount.value = null;
+    }
+    authReady.value = true;
+  } catch (e: any) {
+    // 只有 Admin Key 无效（401）才回登录页；其他错误保持在 dashboard 以便用户看到
+    if (e?.statusCode === 401) {
+      localStorage.removeItem('wechat-exporter:admin-key');
       loginAccount.value = null;
       await navigateTo('/admin');
-      return;
+    } else {
+      loginAccount.value = null;
+      authReady.value = true;
     }
-
-    loginAccount.value = {
-      nickname: resp.data.nickname,
-      avatar: resp.data.avatar,
-      expires: resp.data.expiresAt,
-    };
-    authReady.value = true;
-  } catch (e) {
-    loginAccount.value = null;
-    await navigateTo('/admin');
   }
 });
 </script>
