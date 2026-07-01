@@ -72,6 +72,10 @@ export default defineNuxtConfig({
       wrangler: {
         name: 'wechat-article-exporter',
         compatibility_flags: ['nodejs_compat'],
+        // 让 wrangler deploy 保留在 CF Dashboard 里手动设置的 Runtime Variables /
+        // Secrets（默认行为是把远端配置完全同步为本地 wrangler.json 的镜像，
+        // 会把 Dashboard 里手动加的变量清掉）
+        keep_vars: true,
         kv_namespaces: [
           {
             binding: 'KV',
