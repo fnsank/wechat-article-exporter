@@ -5,7 +5,7 @@ const CREDENTIAL_PREFIX = 'wechat:credentials:';
 export async function setWechatCredential(credential: ParsedCredential): Promise<void> {
   const kv = useStorage('kv');
   await kv.set<ParsedCredential>(`${CREDENTIAL_PREFIX}${credential.biz}`, credential, {
-    expirationTtl: 60 * 60,
+    ttl: 60 * 60,
   });
 }
 

@@ -21,8 +21,9 @@ export async function setMpCookie(key: CookieKVKey, data: CookieKVValue): Promis
   const kv = useStorage('kv');
   try {
     await kv.set<CookieKVValue>(`cookie:${key}`, data, {
-      // https://developers.cloudflare.com/kv/api/write-key-value-pairs/#expiring-keys
-      expirationTtl: getExpirationTtl(data.expiresAt),
+      // unstorage 通用 ttl（秒）。cloudflare-kv-binding driver 会自动转换为 expirationTtl；
+      // upstash driver 只识别 ttl；memory/fs driver 忽略。
+      ttl: getExpirationTtl(data.expiresAt),
     });
     return true;
   } catch (err) {

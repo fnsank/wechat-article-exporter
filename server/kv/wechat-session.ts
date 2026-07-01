@@ -25,7 +25,7 @@ export function isCurrentWechatSessionExpired(session: CurrentWechatSession): bo
 export async function setCurrentWechatSession(session: CurrentWechatSession): Promise<void> {
   const kv = useStorage('kv');
   await kv.set<CurrentWechatSession>(CURRENT_SESSION_KEY, session, {
-    expirationTtl: Math.max(Math.floor((Date.parse(session.expiresAt) - Date.now()) / 1000), 60),
+    ttl: Math.max(Math.floor((Date.parse(session.expiresAt) - Date.now()) / 1000), 60),
   });
 }
 
@@ -56,7 +56,7 @@ export async function updateCurrentWechatSession(authKey: string, expiresAt?: st
 export async function setWechatLoginSession(session: WechatLoginSession): Promise<void> {
   const kv = useStorage('kv');
   await kv.set<WechatLoginSession>(`${LOGIN_SESSION_PREFIX}${session.id}`, session, {
-    expirationTtl: 60 * 10,
+    ttl: 60 * 10,
   });
 }
 

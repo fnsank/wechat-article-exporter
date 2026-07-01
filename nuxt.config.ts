@@ -45,6 +45,10 @@ export default defineNuxtConfig({
       kv: {
         driver: process.env.NITRO_KV_DRIVER || 'memory',
         base: process.env.NITRO_KV_BASE,
+        // upstash driver 凭据：优先读 Vercel Marketplace 集成注入的 KV_REST_API_* 变量，
+        // 回退到 Upstash 原生命名 UPSTASH_REDIS_REST_*
+        url: process.env.KV_REST_API_URL || process.env.UPSTASH_REDIS_REST_URL,
+        token: process.env.KV_REST_API_TOKEN || process.env.UPSTASH_REDIS_REST_TOKEN,
       },
     },
   },
