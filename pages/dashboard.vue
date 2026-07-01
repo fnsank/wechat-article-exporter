@@ -38,6 +38,7 @@ const authReady = ref(false);
 const loginAccount = useLoginAccount();
 const preferences = usePreferences() as unknown as Ref<Preferences>;
 const { registerHooksOnce, hydrateFromServer } = useAccountsSync();
+const wechatKeepalive = useWechatKeepalive();
 
 // 尽早注册 Dexie hook，让所有账号变更（用户在 dashboard 之外触发的也算）都能触发同步
 registerHooksOnce();
@@ -107,6 +108,7 @@ onMounted(async () => {
     authReady.value = true;
     await hydratePreferences();
     await hydrateAccounts();
+    wechatKeepalive.start();
   } catch (e: any) {
     // 只有 Admin Key 无效（401）才回登录页；其他错误保持在 dashboard 以便用户看到
     if (e?.statusCode === 401) {
@@ -122,5 +124,6 @@ onMounted(async () => {
 
 onUnmounted(() => {
   stopPreferencesWatch.value?.();
+  wechatKeepalive.stop();
 });
 </script>
