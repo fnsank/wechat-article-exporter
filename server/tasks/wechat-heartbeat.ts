@@ -18,7 +18,7 @@ import { cookieStore } from '~/server/utils/CookieStore';
  */
 export default defineTask({
   meta: {
-    name: 'wechat:heartbeat',
+    name: 'wechat-heartbeat',
     description: '定时刷新后端微信登录 cookie，避免会话在浏览器关闭期间过期',
   },
 

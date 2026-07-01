@@ -41,9 +41,6 @@ export default defineNuxtConfig({
   },
   nitro: {
     minify: process.env.NODE_ENV === 'production',
-    rollupConfig: {
-      external: ['puppeteer'],
-    },
     storage: {
       kv: {
         driver: process.env.NITRO_KV_DRIVER || 'memory',
@@ -63,7 +60,8 @@ export default defineNuxtConfig({
     },
     scheduledTasks: {
       // 每 5 分钟触发一次微信登录心跳，保持 cookie 不被微信过期
-      '*/5 * * * *': ['wechat:heartbeat'],
+      // 名字要跟 server/tasks/wechat-heartbeat.ts 的文件名一致（Nitro 用文件路径做 task 名）
+      '*/5 * * * *': ['wechat-heartbeat'],
     },
     cloudflare: {
       // 由 nitro 在 build 后自动生成 .output/wrangler.json 并注入 triggers/kv_namespaces
