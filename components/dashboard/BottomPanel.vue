@@ -94,6 +94,12 @@ async function logout() {
   }
 }
 
+async function logoutAdmin() {
+  localStorage.removeItem('wechat-exporter:admin-key');
+  loginAccount.value = null;
+  await navigateTo('/admin');
+}
+
 let timer: number;
 onMounted(() => {
   timer = window.setInterval(() => {
@@ -143,5 +149,12 @@ onUnmounted(() => {
       <UButton color="gray" variant="solid" @click="login">登录公众号</UButton>
     </div>
     <StorageUsage />
+    <button
+      type="button"
+      class="mt-1 self-end text-xs text-slate-500 hover:text-rose-500 transition-colors"
+      @click="logoutAdmin"
+    >
+      退出管理员
+    </button>
   </footer>
 </template>
