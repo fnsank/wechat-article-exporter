@@ -68,9 +68,12 @@ export default defineNuxtConfig({
     cloudflare: {
       // 由 nitro 在 build 后自动生成 .output/wrangler.json 并注入 triggers/kv_namespaces
       deployConfig: true,
-      nodeCompat: true,
+      // 不启用 nodeCompat（否则 Nitro 会在构建期用 unenv 打入 fs/path/buffer/crypto 等
+      // Node polyfill，rollup rendering chunks 阶段内存直接翻倍导致 OOM）；
+      // 改用 CF Workers 的 runtime flag nodejs_compat，运行时按需提供 Node API
       wrangler: {
         name: 'wechat-article-exporter',
+        compatibility_flags: ['nodejs_compat'],
         kv_namespaces: [
           {
             binding: 'KV',
