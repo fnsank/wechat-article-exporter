@@ -42,21 +42,45 @@ export default defineNuxtConfig({
   nitro: {
     minify: process.env.NODE_ENV === 'production',
     storage: {
-      kv: {
-        // 当以 cloudflare_module preset 构建时，自动使用 cloudflare-kv-binding driver，
-        // 避免遗忘在 CF Dashboard 设 NITRO_KV_DRIVER 而回退到易失的 memory driver。
-        // 其它 preset（Vercel/Docker/dev）仍然由 NITRO_KV_DRIVER 环境变量控制。
-        driver:
-          process.env.NITRO_KV_DRIVER ||
-          (process.env.NITRO_PRESET === 'cloudflare_module' ? 'cloudflare-kv-binding' : 'memory'),
-        base: process.env.NITRO_KV_BASE,
-        // upstash driver 凭据：优先读 Vercel Marketplace 集成注入的 KV_REST_API_* 变量，
-        // 回退到 Upstash 原生命名 UPSTASH_REDIS_REST_*
-        url: process.env.KV_REST_API_URL || process.env.UPSTASH_REDIS_REST_URL,
-        token: process.env.KV_REST_API_TOKEN || process.env.UPSTASH_REDIS_REST_TOKEN,
-        // cloudflare-kv-binding driver：读取 CF 上名为 KV 的 Workers KV binding
-        binding: 'KV',
-      },
+      kv: (() => {
+        // CF 环境检测：NITRO_PRESET 有时不会作为 env var 暴露给 process.env，
+        // Nitro 自己是通过检查一批 CF 特有的 env var 来自动选 preset。这里我们
+        // 走同样的检测，避免用户忘设 NITRO_KV_DRIVER 而回退到易失的 memory driver。
+        const preset = (process.env.NITRO_PRESET || '').toLowerCase().replace(/-/g, '_');
+        const isCloudflareBuild =
+          preset === 'cloudflare_module' ||
+          preset === 'cloudflare_pages' ||
+          process.env.CF_PAGES === '1' ||
+          Boolean(process.env.WORKERS_CI) ||
+          Boolean(process.env.CF_WORKER_NAME) ||
+          Boolean(process.env.CF_ACCOUNT_ID);
+
+        const chosenDriver =
+          process.env.NITRO_KV_DRIVER || (isCloudflareBuild ? 'cloudflare-kv-binding' : 'memory');
+
+        // 构建日志里会打印，方便用户在 CF Workers Builds 日志里定位问题
+        console.log('[nuxt.config] storage.kv driver decision:', {
+          NITRO_KV_DRIVER: process.env.NITRO_KV_DRIVER || '(unset)',
+          NITRO_PRESET: process.env.NITRO_PRESET || '(unset)',
+          CF_PAGES: process.env.CF_PAGES || '(unset)',
+          WORKERS_CI: process.env.WORKERS_CI || '(unset)',
+          CF_WORKER_NAME: process.env.CF_WORKER_NAME || '(unset)',
+          CF_ACCOUNT_ID: process.env.CF_ACCOUNT_ID ? '(set)' : '(unset)',
+          isCloudflareBuild,
+          chosenDriver,
+        });
+
+        return {
+          driver: chosenDriver,
+          base: process.env.NITRO_KV_BASE,
+          // upstash driver 凭据：优先读 Vercel Marketplace 集成注入的 KV_REST_API_* 变量，
+          // 回退到 Upstash 原生命名 UPSTASH_REDIS_REST_*
+          url: process.env.KV_REST_API_URL || process.env.UPSTASH_REDIS_REST_URL,
+          token: process.env.KV_REST_API_TOKEN || process.env.UPSTASH_REDIS_REST_TOKEN,
+          // cloudflare-kv-binding driver：读取 CF 上名为 KV 的 Workers KV binding
+          binding: 'KV',
+        };
+      })(),
     },
     // Nitro 任务系统，用于定义 scheduled task；cloudflare_module preset 会
     // 把 scheduledTasks 自动写入 wrangler.json 的 triggers.crons 配置
