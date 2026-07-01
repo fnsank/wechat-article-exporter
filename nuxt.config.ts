@@ -34,7 +34,10 @@ export default defineNuxtConfig({
     },
   },
   sourcemap: {
-    client: 'hidden',
+    // CF Workers Builds 内存吃紧，生产构建禁用 sourcemap（sentry 单独上传）
+    // 本地/其它 preset 保持 'hidden' 便于调试
+    client: process.env.NITRO_PRESET === 'cloudflare_module' ? false : 'hidden',
+    server: process.env.NITRO_PRESET === 'cloudflare_module' ? false : true,
   },
   nitro: {
     minify: process.env.NODE_ENV === 'production',
