@@ -81,10 +81,18 @@ function parseSearchResults(html: string): SogouArticle[] {
       '';
     const coverUrl = cover.startsWith('//') ? `https:${cover}` : cover;
 
-    const accountAnchor = $el.find('.account, .s-p a').first();
-    const accountName = accountAnchor.text().trim();
-    const accountHref = accountAnchor.attr('href') || '';
-    // sogou 用 data-encgpid / data-openid 记账号 id；biz 需从跳转链的 __biz 参数解析（这里保守留空）
+    // Sogou 结果里公众号名放在 <div class="s-p"> 下的 span/a 里，class 名近年多次变化：
+    //   最新观察到的是 <span class="all-time-y2">{name}</span>（就是个 span，不是链接）
+    //   旧版本用 <a class="account">{name}</a>
+    // 加多个 fallback 兜底
+    const $sp = $el.find('.s-p').first();
+    let accountName = $sp.find('.all-time-y2').first().text().trim();
+    if (!accountName) accountName = $sp.find('a.account, .account').first().text().trim();
+    if (!accountName) accountName = $sp.find('a').first().text().trim();
+    if (!accountName) accountName = $sp.find('span').first().text().trim();
+
+    const accountHref = $sp.find('a').first().attr('href') || '';
+    // biz 需从跳转链的 __biz 参数解析（Sogou 未直接暴露，先留空）
     const bizMatch = accountHref.match(/[?&]account=([^&]+)/);
     const accountBiz = bizMatch ? decodeURIComponent(bizMatch[1]) : null;
 
