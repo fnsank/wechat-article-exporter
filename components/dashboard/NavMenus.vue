@@ -9,6 +9,7 @@ interface NavItem {
 
 const items = ref<NavItem[]>([
   { name: '公众号管理', icon: 'i-lucide:users', href: '/dashboard/account' },
+  { name: '文章搜索', icon: 'i-lucide:search', href: '/dashboard/search-articles', tags: ['实验'] },
   { name: '文章下载', icon: 'i-lucide:file-down', href: '/dashboard/article' },
   { name: '单篇文章下载', icon: 'i-lucide:file-text', href: '/dashboard/single' },
   { name: '合集下载', icon: 'i-lucide:library-big', href: '/dashboard/album' },
