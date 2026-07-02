@@ -9,6 +9,7 @@ import type { MpAccount } from './info';
 import type { Metadata } from './metadata';
 import type { ResourceAsset } from './resource';
 import type { ResourceMapAsset } from './resource-map';
+import type { SearchResultAsset } from './search_result';
 
 const db = new Dexie('exporter.wxdown.online') as Dexie & {
   article: Table<ArticleAsset, string>;
@@ -21,6 +22,7 @@ const db = new Dexie('exporter.wxdown.online') as Dexie & {
   metadata: EntityTable<Metadata, 'url'>;
   resource: EntityTable<ResourceAsset, 'url'>;
   'resource-map': EntityTable<ResourceMapAsset, 'url'>;
+  search_result: EntityTable<SearchResultAsset, 'sogou_url'>;
 };
 
 db.version(1).stores({
@@ -49,6 +51,11 @@ db.version(2).stores({
 
 db.version(3).stores({
   debug: 'url, fakeid',
+});
+
+// 文章搜索结果持久化：主键为 sogou_url（每条结果的 sogou 跳转链，天然唯一）
+db.version(4).stores({
+  search_result: 'sogou_url, keyword, updated_at, create_time',
 });
 
 export { db };

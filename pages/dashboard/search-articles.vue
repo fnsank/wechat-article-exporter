@@ -24,9 +24,17 @@ import { sharedGridOptions } from '~/config/shared-grid-options';
 import { articleDeleted, updateArticleStatus } from '~/store/v2/article';
 import { db } from '~/store/v2/db';
 import { type Metadata } from '~/store/v2/metadata';
+import {
+  clearSearchResults,
+  getCachedSearchResults,
+  type SearchResultAsset,
+  upsertSearchResults,
+} from '~/store/v2/search_result';
 import type { Preferences } from '~/types/preferences';
 import type { AppMsgExWithFakeID } from '~/types/types';
 import { createBooleanColumnFilterParams, createDateColumnFilterParams } from '~/utils/grid';
+
+const LAST_SEARCH_STATE_KEY = 'search-articles:last-state';
 
 const SINGLE_ARTICLE_FAKEID = 'SINGLE_ARTICLE_FAKEID';
 
@@ -91,6 +99,8 @@ const timeRange = ref<'all' | '7d' | '30d' | '90d' | 'custom'>('all');
 const customBegin = ref('');
 const customEnd = ref('');
 const page = ref(1);
+const pageSize = ref<number>(10);
+const totalPages = ref<number | null>(null);
 
 const timeRangeOptions = [
   { value: 'all', label: '全部时间' },
@@ -98,6 +108,13 @@ const timeRangeOptions = [
   { value: '30d', label: '最近 30 天' },
   { value: '90d', label: '最近 90 天' },
   { value: 'custom', label: '自定义' },
+];
+
+const pageSizeOptions = [
+  { value: 10, label: '10 条/页' },
+  { value: 20, label: '20 条/页' },
+  { value: 30, label: '30 条/页' },
+  { value: 50, label: '50 条/页' },
 ];
 
 function computeTimeFilter(): { begin_time?: number; end_time?: number } {
@@ -251,25 +268,17 @@ const gridOptions: GridOptions = defu(
   sharedGridOptions
 );
 
+const { save: saveColumnStateToKV, restore: restoreColumnStateFromKV } = useGridColumnState('search');
+
 function onGridReady(params: GridReadyEvent) {
   gridApi.value = params.api;
-  restoreColumnState();
+  restoreColumnStateFromKV(gridApi.value);
+  // 表格就绪后，如果 Dexie 里有上次搜索的缓存，恢复到界面
+  hydrateFromCache();
 }
 
-function saveColumnState() {
-  const state = gridApi.value?.getColumnState();
-  localStorage.setItem('agGridColumnState-search', JSON.stringify(state));
-}
-function restoreColumnState() {
-  const stateStr = localStorage.getItem('agGridColumnState-search');
-  if (stateStr) {
-    try {
-      gridApi.value?.applyColumnState({ state: JSON.parse(stateStr), applyOrder: true });
-    } catch {}
-  }
-}
 function onColumnStateChange() {
-  if (gridApi.value) saveColumnState();
+  saveColumnStateToKV(gridApi.value);
 }
 
 // -------- 选择 --------
@@ -293,6 +302,8 @@ interface SearchResponse {
   total_before_filter?: number;
   resolved?: number;
   page?: number;
+  page_size?: number;
+  total_pages?: number | null;
   elapsedMs?: number;
   reason?: string;
 }
@@ -301,6 +312,40 @@ const searching = ref(false);
 const searchError = ref('');
 const hasSearched = ref(false);
 const searchStats = ref({ total: 0, resolved: 0, elapsedMs: 0 });
+
+function apiToRow(a: ApiArticle): SearchArticle {
+  return {
+    title: a.title,
+    digest: a.abstract,
+    cover: a.cover_url,
+    author_name: a.account_nickname,
+    create_time: a.create_time,
+    link: a.link || a.sogou_url,
+    mp_link: a.link,
+    sogou_url: a.sogou_url,
+    fakeid: a.fakeid || '',
+    aid: a.sn || '',
+    contentDownload: false,
+    commentDownload: false,
+  };
+}
+
+function persistLastSearchState() {
+  try {
+    localStorage.setItem(
+      LAST_SEARCH_STATE_KEY,
+      JSON.stringify({
+        keyword: keyword.value,
+        timeRange: timeRange.value,
+        customBegin: customBegin.value,
+        customEnd: customEnd.value,
+        page: page.value,
+        pageSize: pageSize.value,
+        totalPages: totalPages.value,
+      })
+    );
+  } catch {}
+}
 
 async function doSearch(newPage = 1) {
   const q = keyword.value.trim();
@@ -311,7 +356,11 @@ async function doSearch(newPage = 1) {
   page.value = newPage;
 
   const filter = computeTimeFilter();
-  const query: Record<string, string> = { q, page: String(newPage) };
+  const query: Record<string, string> = {
+    q,
+    page: String(newPage),
+    page_size: String(pageSize.value),
+  };
   if (filter.begin_time) query.begin_time = String(filter.begin_time);
   if (filter.end_time) query.end_time = String(filter.end_time);
 
@@ -323,34 +372,91 @@ async function doSearch(newPage = 1) {
       gridApi.value?.setGridOption('rowData', []);
       return;
     }
-    const rows: SearchArticle[] = (resp.articles || []).map(a => ({
-      title: a.title,
-      digest: a.abstract,
-      cover: a.cover_url,
-      author_name: a.account_nickname,
-      create_time: a.create_time,
-      // 优先用真实 mp URL，解析失败时 fallback 到 sogou_url 保证访问原文按钮不废
-      link: a.link || a.sogou_url,
-      mp_link: a.link,
-      sogou_url: a.sogou_url,
-      fakeid: a.fakeid || '',
-      aid: a.sn || '',
-      contentDownload: false,
-      commentDownload: false,
-    }));
+    const rows: SearchArticle[] = (resp.articles || []).map(apiToRow);
 
     globalRowData = rows;
     gridApi.value?.setGridOption('rowData', rows);
+    totalPages.value = resp.total_pages ?? null;
     searchStats.value = {
       total: resp.total || 0,
       resolved: resp.resolved || 0,
       elapsedMs: resp.elapsedMs || 0,
     };
+
+    // 持久化结果到 Dexie：新关键词换页时清掉旧缓存，然后写入
+    const now = Math.floor(Date.now() / 1000);
+    const assets: SearchResultAsset[] = (resp.articles || []).map(a => ({
+      sogou_url: a.sogou_url,
+      keyword: q,
+      page: newPage,
+      title: a.title,
+      abstract: a.abstract,
+      cover_url: a.cover_url,
+      link: a.link,
+      fakeid: a.fakeid,
+      sn: a.sn,
+      account_nickname: a.account_nickname,
+      create_time: a.create_time,
+      updated_at: now,
+    }));
+    // 新一次翻页/搜索时，先清掉这个 keyword 下的老缓存再写入
+    if (newPage === 1) await clearSearchResults(q);
+    await upsertSearchResults(assets);
+
+    // 持久化 last search state 到 localStorage，页面刷新后能恢复
+    persistLastSearchState();
   } catch (e: any) {
     searchError.value = e?.statusMessage || e?.message || '搜索失败';
   } finally {
     searching.value = false;
   }
+}
+
+/**
+ * 页面挂载时从 Dexie 恢复上次的搜索结果。localStorage 里存了上次搜索的
+ * 参数（keyword、page、pageSize、timeRange 等），Dexie 里存了对应的结果集。
+ */
+async function hydrateFromCache() {
+  let state: Record<string, any> = {};
+  try {
+    const stored = localStorage.getItem(LAST_SEARCH_STATE_KEY);
+    if (stored) state = JSON.parse(stored);
+  } catch {}
+  if (!state.keyword) return;
+
+  keyword.value = state.keyword;
+  if (state.timeRange) timeRange.value = state.timeRange;
+  if (state.customBegin) customBegin.value = state.customBegin;
+  if (state.customEnd) customEnd.value = state.customEnd;
+  if (state.page) page.value = state.page;
+  if (state.pageSize) pageSize.value = state.pageSize;
+  if (state.totalPages) totalPages.value = state.totalPages;
+
+  const cached = await getCachedSearchResults(state.keyword);
+  if (cached.length === 0) return;
+
+  const rows: SearchArticle[] = cached.map(c => ({
+    title: c.title,
+    digest: c.abstract,
+    cover: c.cover_url,
+    author_name: c.account_nickname,
+    create_time: c.create_time,
+    link: c.link || c.sogou_url,
+    mp_link: c.link,
+    sogou_url: c.sogou_url,
+    fakeid: c.fakeid || '',
+    aid: c.sn || '',
+    contentDownload: false,
+    commentDownload: false,
+  }));
+  globalRowData = rows;
+  gridApi.value?.setGridOption('rowData', rows);
+  hasSearched.value = true;
+  searchStats.value = {
+    total: rows.length,
+    resolved: rows.filter(r => r.mp_link).length,
+    elapsedMs: 0,
+  };
 }
 
 // -------- 预览 & 复制 & 抓取 & 导出 --------
@@ -523,8 +629,16 @@ async function fireExport(format: 'excel' | 'json' | 'html' | 'text' | 'markdown
 function goPage(delta: number) {
   const target = page.value + delta;
   if (target < 1) return;
+  if (totalPages.value && target > totalPages.value) return;
   doSearch(target);
 }
+
+// 用户改 pageSize 后：如果已经搜过，重新以第 1 页搜一次
+watch(pageSize, (nv, ov) => {
+  if (nv !== ov && hasSearched.value && keyword.value.trim()) {
+    doSearch(1);
+  }
+});
 </script>
 
 <template>
@@ -561,6 +675,14 @@ function goPage(delta: number) {
 
           <div class="flex-1"></div>
 
+          <USelectMenu
+            v-model="pageSize"
+            :options="pageSizeOptions"
+            value-attribute="value"
+            option-attribute="label"
+            class="w-28"
+          />
+
           <UButton
             color="gray"
             variant="outline"
@@ -568,11 +690,15 @@ function goPage(delta: number) {
             icon="i-lucide:chevron-left"
             @click="goPage(-1)"
           />
-          <span class="text-sm text-slate-500 min-w-[3rem] text-center">第 {{ page }} 页</span>
+          <span class="text-sm text-slate-500 min-w-[4.5rem] text-center font-mono">
+            {{ page }}<span v-if="totalPages"> / {{ totalPages }}</span>
+          </span>
           <UButton
             color="gray"
             variant="outline"
-            :disabled="globalRowData.length === 0 || searching"
+            :disabled="
+              searching || globalRowData.length === 0 || (totalPages !== null && page >= totalPages)
+            "
             trailing-icon="i-lucide:chevron-right"
             @click="goPage(1)"
           />

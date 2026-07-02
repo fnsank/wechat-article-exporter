@@ -316,31 +316,15 @@ const gridOptions: GridOptions = defu(
 );
 
 const gridApi = shallowRef<GridApi | null>(null);
+const { save: saveColumnStateToKV, restore: restoreColumnStateFromKV } = useGridColumnState('article');
+
 function onGridReady(params: GridReadyEvent) {
   gridApi.value = params.api;
-
-  restoreColumnState();
+  restoreColumnStateFromKV(gridApi.value);
 }
 
 function onColumnStateChange() {
-  if (gridApi.value) {
-    saveColumnState();
-  }
-}
-function saveColumnState() {
-  const state = gridApi.value?.getColumnState();
-  localStorage.setItem('agGridColumnState', JSON.stringify(state));
-}
-
-function restoreColumnState() {
-  const stateStr = localStorage.getItem('agGridColumnState');
-  if (stateStr) {
-    const state = JSON.parse(stateStr);
-    gridApi.value?.applyColumnState({
-      state,
-      applyOrder: true,
-    });
-  }
+  saveColumnStateToKV(gridApi.value);
 }
 
 function onFilterChanged(event: FilterChangedEvent) {

@@ -2,6 +2,10 @@ import * as cheerio from 'cheerio';
 
 const SEARCH_URL_TEMPLATE = 'https://weixin.sogou.com/weixin?type=2&query={q}&page={p}&ie=utf8';
 
+// Sogou 一页固定 10 条，我们通过多次请求相邻 sogou 页拼接来实现更大的逻辑 pageSize
+const SOGOU_PAGE_SIZE = 10;
+export const MAX_PAGE_SIZE = 50;
+
 const BROWSER_HEADERS: Record<string, string> = {
   'User-Agent':
     'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36',
@@ -20,13 +24,9 @@ export interface SogouArticle {
   title: string;
   abstract: string;
   cover_url: string;
-  // sogou 的跳转链，浏览器打开会 302 到真实文章。API 消费者一般不需要它，保留供调试
   sogou_url: string;
-  // 真实的 mp.weixin.qq.com/s?... 链接，解析失败时为 null
   link: string | null;
-  // 从 mp URL 的 __biz 参数解析出的 fakeid（base64 编码字符串）
   fakeid: string | null;
-  // 从 mp URL 的 sn 参数解析出的短哈希，可作 article id
   sn: string | null;
   account_nickname: string;
   create_time: number | null;
@@ -39,6 +39,8 @@ export type SogouSearchResult =
       total: number;
       resolved: number;
       page: number;
+      pageSize: number;
+      totalPages: number | null;
       elapsedMs: number;
     }
   | {
@@ -60,11 +62,6 @@ function isAntiSpider(html: string, finalUrl: string): boolean {
   return false;
 }
 
-/**
- * 从搜索页响应的 Set-Cookie 头里挑出会话相关 cookie，拼成 Cookie 请求头字符串。
- * sogou /link 页需要带 SNUID/SUV 等才能拿到真实 mp URL，不带就 302 到 antispider。
- * 同一 session 内 SNUID 与搜索页返回的 token 匹配，反爬门槛最低。
- */
 function extractSessionCookies(setCookies: string[]): string {
   const keep = new Set(['SNUID', 'SUV', 'SUID', 'IPLOC', 'ABTEST', 'CXID', 'SMYUV']);
   const parts: string[] = [];
@@ -81,13 +78,6 @@ function decodeHtml(s: string): string {
   return s.replace(/&amp;/g, '&').replace(/&#x2f;/gi, '/').replace(/&quot;/g, '"');
 }
 
-/**
- * 从 sogou /link 页的响应 HTML 里提取 mp.weixin.qq.com/s?... URL。
- * sogou 有几种嵌入形态：
- *   1) location.replace("https://mp.weixin.qq.com/s?...")
- *   2) 分段拼接：var url=''; url+='https://mp.weixin'; url+='.qq.com/s?...';
- *   3) <meta http-equiv="refresh" content="0; url=https://mp.weixin.qq.com/s?...">
- */
 function extractMpUrl(html: string): string | null {
   const directMatch =
     html.match(/location\.(?:href|replace)\s*=\s*["']([^"']*mp\.weixin\.qq\.com\/s[^"']*)["']/i) ||
@@ -128,7 +118,6 @@ function parseSearchResults(html: string): ParsedSearchItem[] {
 
   items.each((_, el) => {
     const $el = $(el);
-
     const titleAnchor = $el.find('h3 a, h4 a').first();
     const title = titleAnchor.text().trim();
     if (!title) return;
@@ -172,70 +161,136 @@ function parseSearchResults(html: string): ParsedSearchItem[] {
 }
 
 /**
- * 在同一 HTTP session 里完成"搜索 → 逐条解析 sogou /link → 拿到真实 mp URL"。
- *
- * 关键：sogou /link URL 里的 token 参数是搜索页返回时跟当时 SNUID 绑定的。
- * 只有用同一份 SNUID 请求 /link，token 校验才能过，否则 302 到 antispider。
- * 服务端搜完立刻用返回的 Set-Cookie 请求每个 /link，能极大提高成功率。
+ * 从 Sogou 搜索页 HTML 里提取"总 sogou 页数"。Sogou 一般在 #pagebar_container
+ * 里放页码链接（uigs="page_1", "page_2" ...）。取最大 N 作为总页数。
  */
-export async function searchAndResolveSogouArticles(keyword: string, page = 1): Promise<SogouSearchResult> {
-  const url = SEARCH_URL_TEMPLATE.replace('{q}', encodeURIComponent(keyword)).replace('{p}', String(page));
-  const started = Date.now();
+function extractSogouTotalPages(html: string): number | null {
+  const $ = cheerio.load(html);
+  const nums: number[] = [];
+  $('#pagebar_container a, .p a').each((_, el) => {
+    const uigs = $(el).attr('uigs') || '';
+    const m = uigs.match(/page_(\d+)/);
+    if (m) nums.push(Number(m[1]));
+    // 兜底：href 里也可能有 &page=N
+    const href = $(el).attr('href') || '';
+    const m2 = href.match(/[?&]page=(\d+)/);
+    if (m2) nums.push(Number(m2[1]));
+  });
+  if (nums.length === 0) return null;
+  return Math.max(...nums);
+}
 
-  // Step 1: 搜索
-  let searchResp: Response;
+interface SogouPageFetch {
+  ok: boolean;
+  reason?: 'antispider' | 'network-error' | 'parse-error';
+  message?: string;
+  status?: number;
+  finalUrl?: string;
+  items?: ParsedSearchItem[];
+  setCookies?: string[];
+  sogouTotalPages?: number | null;
+}
+
+async function fetchSogouSearchPage(keyword: string, sogouPage: number, cookieHeader: string): Promise<SogouPageFetch> {
+  const url = SEARCH_URL_TEMPLATE.replace('{q}', encodeURIComponent(keyword)).replace('{p}', String(sogouPage));
+  const headers: Record<string, string> = { ...BROWSER_HEADERS };
+  if (cookieHeader) headers.Cookie = cookieHeader;
+
+  let resp: Response;
   try {
-    searchResp = await fetch(url, {
-      method: 'GET',
-      headers: BROWSER_HEADERS,
-      redirect: 'follow',
-    });
+    resp = await fetch(url, { method: 'GET', headers, redirect: 'follow' });
   } catch (e: any) {
-    return {
-      ok: false,
-      reason: 'network-error',
-      message: String(e?.message || e),
-      elapsedMs: Date.now() - started,
-    };
+    return { ok: false, reason: 'network-error', message: String(e?.message || e) };
   }
 
-  const html = await searchResp.text();
-
-  if (isAntiSpider(html, searchResp.url)) {
+  const html = await resp.text();
+  if (isAntiSpider(html, resp.url)) {
     return {
       ok: false,
       reason: 'antispider',
-      message: 'Sogou 搜索页触发反爬（验证码/频率限制）',
-      status: searchResp.status,
-      finalUrl: searchResp.url,
-      elapsedMs: Date.now() - started,
+      message: 'Sogou 搜索页触发反爬',
+      status: resp.status,
+      finalUrl: resp.url,
     };
   }
 
-  let parsed: ParsedSearchItem[];
   try {
-    parsed = parseSearchResults(html);
-  } catch (e: any) {
+    const items = parseSearchResults(html);
+    const sogouTotalPages = extractSogouTotalPages(html);
     return {
-      ok: false,
-      reason: 'parse-error',
-      message: String(e?.message || e),
-      status: searchResp.status,
-      finalUrl: searchResp.url,
-      elapsedMs: Date.now() - started,
+      ok: true,
+      items,
+      setCookies: resp.headers.getSetCookie(),
+      sogouTotalPages,
+      status: resp.status,
+      finalUrl: resp.url,
     };
+  } catch (e: any) {
+    return { ok: false, reason: 'parse-error', message: String(e?.message || e) };
+  }
+}
+
+/**
+ * 端到端流程：
+ *   1. 计算需要抓的 sogou 起始/结束页（每条逻辑页 = ⌈pageSize/10⌉ 个 sogou 页）
+ *   2. 依次 fetch 各 sogou 页，收集 items + cookies + totalPages
+ *   3. 用累积的 cookies 并行解析每条 item 的 /link → 真实 mp URL
+ */
+export async function searchAndResolveSogouArticles(
+  keyword: string,
+  page: number = 1,
+  pageSize: number = SOGOU_PAGE_SIZE
+): Promise<SogouSearchResult> {
+  const started = Date.now();
+  const effectivePageSize = Math.max(SOGOU_PAGE_SIZE, Math.min(pageSize, MAX_PAGE_SIZE));
+  const sogouPagesPerLogical = Math.ceil(effectivePageSize / SOGOU_PAGE_SIZE);
+  const startSogouPage = (Math.max(1, page) - 1) * sogouPagesPerLogical + 1;
+
+  let cookieHeader = '';
+  const allItems: ParsedSearchItem[] = [];
+  let sogouTotalPages: number | null = null;
+  let firstErrorLike: SogouPageFetch | null = null;
+
+  for (let i = 0; i < sogouPagesPerLogical; i++) {
+    const result = await fetchSogouSearchPage(keyword, startSogouPage + i, cookieHeader);
+    if (!result.ok) {
+      // 首页失败直接返回错误；后续页失败则忽略（可能是"没有更多结果"）
+      if (i === 0) {
+        return {
+          ok: false,
+          reason: result.reason || 'parse-error',
+          message: result.message || 'unknown',
+          status: result.status,
+          finalUrl: result.finalUrl,
+          elapsedMs: Date.now() - started,
+        };
+      }
+      firstErrorLike = firstErrorLike || result;
+      break;
+    }
+    // 累积 cookies（用于下一次 sogou 页请求和后续 /link 解析）
+    if (result.setCookies && result.setCookies.length > 0) {
+      const newCookies = extractSessionCookies(result.setCookies);
+      if (newCookies) cookieHeader = newCookies;
+    }
+    if (i === 0 && result.sogouTotalPages) {
+      sogouTotalPages = result.sogouTotalPages;
+    }
+    if (result.items) {
+      allItems.push(...result.items);
+      if (result.items.length < SOGOU_PAGE_SIZE) break; // 到底了
+    }
   }
 
-  // Step 2: 用搜索响应的会话 cookie 并行解析每条 /link
-  const sessionCookie = extractSessionCookies(searchResp.headers.getSetCookie());
-  const linkHeaders: Record<string, string> = {
-    ...BROWSER_HEADERS,
-    Referer: searchResp.url,
-  };
-  if (sessionCookie) linkHeaders.Cookie = sessionCookie;
+  // 逻辑总页数
+  const logicalTotalPages = sogouTotalPages ? Math.ceil(sogouTotalPages / sogouPagesPerLogical) : null;
+
+  // 用最终 cookies 并行解析每条 /link
+  const linkHeaders: Record<string, string> = { ...BROWSER_HEADERS };
+  if (cookieHeader) linkHeaders.Cookie = cookieHeader;
 
   const articles: SogouArticle[] = await Promise.all(
-    parsed.map(async item => {
+    allItems.map(async item => {
       let link: string | null = null;
       try {
         const linkResp = await fetch(item.sogou_url, {
@@ -243,8 +298,6 @@ export async function searchAndResolveSogouArticles(keyword: string, page = 1): 
           headers: linkHeaders,
           redirect: 'follow',
         });
-
-        // 优先看最终跳转的 URL 是否已经是 mp.weixin
         if (linkResp.url.includes('mp.weixin.qq.com/s')) {
           link = linkResp.url;
         } else if (!linkResp.url.includes('/antispider')) {
@@ -252,7 +305,7 @@ export async function searchAndResolveSogouArticles(keyword: string, page = 1): 
           link = extractMpUrl(linkHtml);
         }
       } catch {
-        // 单条失败不影响整体，link 保持 null
+        // 单条失败保留 null
       }
 
       const biz = link ? link.match(/[?&]__biz=([^&]+)/)?.[1] || null : null;
@@ -279,6 +332,8 @@ export async function searchAndResolveSogouArticles(keyword: string, page = 1): 
     total: articles.length,
     resolved,
     page,
+    pageSize: effectivePageSize,
+    totalPages: logicalTotalPages,
     elapsedMs: Date.now() - started,
   };
 }

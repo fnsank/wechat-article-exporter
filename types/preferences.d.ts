@@ -20,6 +20,11 @@ export interface Preferences {
 
   syncDateRange: '24h' | '1d' | '3d' | '7d' | '1m' | '3m' | '6m' | '1y' | 'all' | 'point';
   syncDatePoint: number;
+
+  // AG Grid 列状态持久化，key 为页面标识（article / account / search / ...）
+  // value 为该页面 gridApi.getColumnState() 的返回值（一个 JSON 序列化的数组）。
+  // 存在 preferences 里跟 KV 同步，多设备一致。
+  gridColumnState: Record<string, unknown>;
 }
 
 interface ExportConfig {

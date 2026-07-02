@@ -21,6 +21,7 @@ const defaultOptions: Partial<Preferences> = {
   accountSyncSeconds: 3,
   syncDateRange: 'all',
   syncDatePoint: MP_ORIGIN_TIMESTAMP,
+  gridColumnState: {},
 };
 
 export default () => {

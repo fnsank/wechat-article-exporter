@@ -355,25 +355,13 @@ function onGridReady(params: GridReadyEvent) {
   refresh();
 }
 
-function onColumnStateChange() {
-  if (gridApi.value) {
-    saveColumnState();
-  }
-}
-function saveColumnState() {
-  const state = gridApi.value?.getColumnState();
-  localStorage.setItem('agGridColumnState-account', JSON.stringify(state));
-}
+const { save: saveColumnStateToKV, restore: restoreColumnStateFromKV } = useGridColumnState('account');
 
+function onColumnStateChange() {
+  saveColumnStateToKV(gridApi.value);
+}
 function restoreColumnState() {
-  const stateStr = localStorage.getItem('agGridColumnState-account');
-  if (stateStr) {
-    const state = JSON.parse(stateStr);
-    gridApi.value?.applyColumnState({
-      state,
-      applyOrder: true,
-    });
-  }
+  restoreColumnStateFromKV(gridApi.value);
 }
 
 async function refresh() {
