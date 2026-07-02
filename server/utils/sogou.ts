@@ -41,6 +41,10 @@ export type SogouSearchResult =
       page: number;
       pageSize: number;
       totalPages: number | null;
+      // Sogou 页顶部宣传的"共 XXX 条结果"数字。跟 totalPages 不同——
+      // 未登录用户翻页深度被限制在约 10 页（100 条），所以 totalResults
+      // 常远大于实际能拉到的数据量
+      totalResults: number | null;
       elapsedMs: number;
     }
   | {
@@ -161,6 +165,20 @@ function parseSearchResults(html: string): ParsedSearchItem[] {
 }
 
 /**
+ * 从 sogou 结果页顶部宣传文案里抽出"共 XXX 条结果"数字。
+ * 常见样式：
+ *   "为您找到相关结果约 943 个"
+ *   "找到相关文章 43 篇"
+ *   "共约 100 条"
+ */
+function extractTotalResults(html: string): number | null {
+  const m = html.match(/(?:为您找到|找到|结果|共约|共)[^<>]{0,40}?(\d+(?:,\d+)*)\s*(?:个|篇|条)/);
+  if (!m) return null;
+  const n = Number(m[1].replace(/,/g, ''));
+  return Number.isFinite(n) ? n : null;
+}
+
+/**
  * 从 Sogou 搜索页 HTML 里提取"总 sogou 页数"。Sogou 一般在 #pagebar_container
  * 里放页码链接（uigs="page_1", "page_2" ...）。取最大 N 作为总页数。
  */
@@ -189,7 +207,38 @@ interface SogouPageFetch {
   items?: ParsedSearchItem[];
   setCookies?: string[];
   sogouTotalPages?: number | null;
+  totalResults?: number | null;
 }
+
+/**
+ * 受控并发的 Promise.all —— 一次最多 `limit` 个任务在飞，避免瞬时爆发触发
+ * sogou 反爬。批次处理策略：sliding window，前一个完成才启新的。
+ */
+async function limitedParallel<T, R>(
+  items: T[],
+  limit: number,
+  fn: (item: T, idx: number) => Promise<R>
+): Promise<R[]> {
+  const results: R[] = new Array(items.length);
+  const executing = new Set<Promise<void>>();
+  for (let i = 0; i < items.length; i++) {
+    const idx = i;
+    const p = (async () => {
+      results[idx] = await fn(items[idx], idx);
+    })();
+    executing.add(p);
+    p.finally(() => executing.delete(p));
+    if (executing.size >= limit) {
+      await Promise.race(executing);
+    }
+  }
+  await Promise.all(executing);
+  return results;
+}
+
+// /link 解析的最大并发数。太高容易触发 sogou 反爬（尤其是 pageSize=50 场景），
+// 太低响应会慢。5 是保守配置：50 个 link 大概需 3-4 秒完成。
+const LINK_RESOLVE_CONCURRENCY = 5;
 
 async function fetchSogouSearchPage(keyword: string, sogouPage: number, cookieHeader: string): Promise<SogouPageFetch> {
   const url = SEARCH_URL_TEMPLATE.replace('{q}', encodeURIComponent(keyword)).replace('{p}', String(sogouPage));
@@ -217,11 +266,13 @@ async function fetchSogouSearchPage(keyword: string, sogouPage: number, cookieHe
   try {
     const items = parseSearchResults(html);
     const sogouTotalPages = extractSogouTotalPages(html);
+    const totalResults = extractTotalResults(html);
     return {
       ok: true,
       items,
       setCookies: resp.headers.getSetCookie(),
       sogouTotalPages,
+      totalResults,
       status: resp.status,
       finalUrl: resp.url,
     };
@@ -249,6 +300,7 @@ export async function searchAndResolveSogouArticles(
   let cookieHeader = '';
   const allItems: ParsedSearchItem[] = [];
   let sogouTotalPages: number | null = null;
+  let totalResults: number | null = null;
   let firstErrorLike: SogouPageFetch | null = null;
 
   for (let i = 0; i < sogouPagesPerLogical; i++) {
@@ -273,8 +325,9 @@ export async function searchAndResolveSogouArticles(
       const newCookies = extractSessionCookies(result.setCookies);
       if (newCookies) cookieHeader = newCookies;
     }
-    if (i === 0 && result.sogouTotalPages) {
-      sogouTotalPages = result.sogouTotalPages;
+    if (i === 0) {
+      if (result.sogouTotalPages) sogouTotalPages = result.sogouTotalPages;
+      if (result.totalResults != null) totalResults = result.totalResults;
     }
     if (result.items) {
       allItems.push(...result.items);
@@ -285,12 +338,11 @@ export async function searchAndResolveSogouArticles(
   // 逻辑总页数
   const logicalTotalPages = sogouTotalPages ? Math.ceil(sogouTotalPages / sogouPagesPerLogical) : null;
 
-  // 用最终 cookies 并行解析每条 /link
+  // 用最终 cookies 受控并发解析每条 /link，避免瞬时爆发触发反爬
   const linkHeaders: Record<string, string> = { ...BROWSER_HEADERS };
   if (cookieHeader) linkHeaders.Cookie = cookieHeader;
 
-  const articles: SogouArticle[] = await Promise.all(
-    allItems.map(async item => {
+  const articles: SogouArticle[] = await limitedParallel(allItems, LINK_RESOLVE_CONCURRENCY, async item => {
       let link: string | null = null;
       try {
         const linkResp = await fetch(item.sogou_url, {
@@ -322,8 +374,7 @@ export async function searchAndResolveSogouArticles(
         account_nickname: item.account_nickname,
         create_time: item.create_time,
       };
-    })
-  );
+    });
 
   const resolved = articles.filter(a => a.link).length;
   return {
@@ -334,6 +385,7 @@ export async function searchAndResolveSogouArticles(
     page,
     pageSize: effectivePageSize,
     totalPages: logicalTotalPages,
+    totalResults,
     elapsedMs: Date.now() - started,
   };
 }

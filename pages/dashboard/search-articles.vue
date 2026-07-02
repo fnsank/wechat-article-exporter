@@ -101,6 +101,7 @@ const customEnd = ref('');
 const page = ref(1);
 const pageSize = ref<number>(10);
 const totalPages = ref<number | null>(null);
+const totalResults = ref<number | null>(null);
 
 const timeRangeOptions = [
   { value: 'all', label: '全部时间' },
@@ -304,6 +305,7 @@ interface SearchResponse {
   page?: number;
   page_size?: number;
   total_pages?: number | null;
+  total_results?: number | null;
   elapsedMs?: number;
   reason?: string;
 }
@@ -377,6 +379,7 @@ async function doSearch(newPage = 1) {
     globalRowData = rows;
     gridApi.value?.setGridOption('rowData', rows);
     totalPages.value = resp.total_pages ?? null;
+    totalResults.value = resp.total_results ?? null;
     searchStats.value = {
       total: resp.total || 0,
       resolved: resp.resolved || 0,
@@ -760,6 +763,16 @@ watch(pageSize, (nv, ov) => {
 
           <div v-if="hasSearched && !searching && !searchError" class="text-xs text-slate-500 ml-auto">
             {{ searchStats.total }} 条 · {{ searchStats.resolved }} 已解析 · {{ searchStats.elapsedMs }}ms
+            <UTooltip
+              v-if="totalResults"
+              :text="`Sogou 声明共 ${totalResults} 条结果，但未登录用户仅可翻页查看约 ${totalPages || 10} 页 (~${(totalPages || 10) * 10} 条)`"
+              :popper="{ placement: 'top' }"
+            >
+              <span class="ml-2 text-slate-400 underline decoration-dotted">
+                Sogou 声明 {{ totalResults.toLocaleString() }} 条
+                <UIcon name="i-lucide:info" class="size-3 inline align-baseline" />
+              </span>
+            </UTooltip>
           </div>
         </div>
 

@@ -64,6 +64,9 @@ export default defineEventHandler(async event => {
     page: result.page,
     page_size: result.pageSize,
     total_pages: result.totalPages,
+    // Sogou 页顶部宣传的"共 XXX 条"总数；未登录状态下 total_pages * 10 才是
+    // 我们能实际拉到的上限，通常远小于 total_results
+    total_results: result.totalResults,
     elapsedMs: result.elapsedMs,
   };
 });
