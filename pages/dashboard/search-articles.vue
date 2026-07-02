@@ -11,6 +11,7 @@ import type {
 } from 'ag-grid-community';
 import { AgGridVue } from 'ag-grid-vue3';
 import { defu } from 'defu';
+import dayjs from 'dayjs';
 import type { PreviewArticle } from '#components';
 import { formatTimeStamp } from '#shared/utils/helpers';
 import { request } from '#shared/utils/request';
@@ -21,9 +22,13 @@ import toastFactory from '~/composables/toast';
 import { websiteName } from '~/config';
 import { sharedGridOptions } from '~/config/shared-grid-options';
 import { articleDeleted, updateArticleStatus } from '~/store/v2/article';
+import { db } from '~/store/v2/db';
 import { type Metadata } from '~/store/v2/metadata';
 import type { Preferences } from '~/types/preferences';
+import type { AppMsgExWithFakeID } from '~/types/types';
 import { createBooleanColumnFilterParams, createDateColumnFilterParams } from '~/utils/grid';
+
+const SINGLE_ARTICLE_FAKEID = 'SINGLE_ARTICLE_FAKEID';
 
 useHead({
   title: `文章搜索 | ${websiteName}`,
@@ -425,8 +430,72 @@ const {
   exportFile,
 } = useExporter();
 
-function fireDownload(type: 'html' | 'metadata' | 'comment') {
-  const urls = resolvedSelectedUrls.value;
+/**
+ * 把搜索结果作为"虚拟"文章记录塞进 Dexie，供后续 useDownloader / useExporter
+ * 通过 getArticleByLink 找到。对齐 pages/dashboard/single.vue 里 upsertArticleStub
+ * 的做法。
+ *
+ * Sogou 解析出来的 mp URL 是 signature 式（?src=11&timestamp=...&signature=...），
+ * 没有 __biz / mid / sn 参数，因此 fakeid 走 SINGLE_ARTICLE_FAKEID 占位符，
+ * 之后如果需要真实 fakeid，可以再跑一次 download('fakeid') 从抓下来的 html 里
+ * 提取 biz 填回。
+ */
+function buildStub(article: SearchArticle, index: number): AppMsgExWithFakeID {
+  const now = dayjs().unix();
+  // 稳定的 aid：优先用 sogou_url 尾部的 hash（唯一）+ index，保证不冲突
+  const hashPart = article.sogou_url.slice(-24).replace(/[^a-zA-Z0-9]/g, '');
+  const aid = `${hashPart}_${index}`;
+  return {
+    fakeid: SINGLE_ARTICLE_FAKEID,
+    _status: '',
+    aid,
+    album_id: '',
+    appmsg_album_infos: [],
+    appmsgid: now,
+    author_name: article.author_name || '',
+    ban_flag: 0,
+    checking: 0,
+    copyright_stat: 0,
+    copyright_type: 0,
+    cover: article.cover || '',
+    cover_img: article.cover || '',
+    cover_img_theme_color: undefined,
+    create_time: article.create_time || now,
+    digest: article.digest || '',
+    has_red_packet_cover: 0,
+    is_deleted: false,
+    is_pay_subscribe: 0,
+    item_show_type: 0,
+    itemidx: 1,
+    link: article.link,
+    media_duration: '0:00',
+    mediaapi_publish_status: 0,
+    pic_cdn_url_1_1: article.cover || '',
+    pic_cdn_url_3_4: article.cover || '',
+    pic_cdn_url_16_9: article.cover || '',
+    pic_cdn_url_235_1: article.cover || '',
+    title: article.title,
+    update_time: article.create_time || now,
+    _single: true,
+  } as AppMsgExWithFakeID;
+}
+
+async function ensureStubsInDexie(articles: SearchArticle[]): Promise<string[]> {
+  const validUrls: string[] = [];
+  await Promise.all(
+    articles.map(async (article, index) => {
+      if (!article.mp_link) return;
+      const stub = buildStub(article, index);
+      await db.article.put(stub, `${stub.fakeid}:${stub.aid}`);
+      validUrls.push(article.mp_link);
+    })
+  );
+  return validUrls;
+}
+
+async function fireDownload(type: 'html' | 'metadata' | 'comment') {
+  if (selectedArticles.value.length === 0) return;
+  const urls = await ensureStubsInDexie(selectedArticles.value);
   if (urls.length === 0) {
     toast.error('无可用链接', '所选行都未解析出真实 mp 链接，无法抓取');
     return;
@@ -437,8 +506,9 @@ function fireDownload(type: 'html' | 'metadata' | 'comment') {
   download(type, urls);
 }
 
-function fireExport(format: 'excel' | 'json' | 'html' | 'text' | 'markdown') {
-  const urls = resolvedSelectedUrls.value;
+async function fireExport(format: 'excel' | 'json' | 'html' | 'text' | 'markdown') {
+  if (selectedArticles.value.length === 0) return;
+  const urls = await ensureStubsInDexie(selectedArticles.value);
   if (urls.length === 0) {
     toast.error('无可用链接', '所选行都未解析出真实 mp 链接，无法导出');
     return;
