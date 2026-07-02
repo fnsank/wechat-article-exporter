@@ -92,6 +92,11 @@ export default defineEventHandler(async event => {
   const html = await response.text();
   const analysis = analyze(html, response.url);
 
+  // 提取第一条搜索结果的完整 HTML，方便定位 DOM 结构写对 selector
+  const $ = cheerio.load(html);
+  const firstItem = $('.news-list > li').first();
+  const firstItemHtml = firstItem.length ? $.html(firstItem) : null;
+
   return {
     ...analysis,
     keyword: q,
@@ -106,5 +111,7 @@ export default defineEventHandler(async event => {
     elapsedMs: Date.now() - started,
     // 前 500 字节的原始 HTML 片段，方便人工判断
     htmlSnippet: html.slice(0, 500),
+    // 第一条 <li> 完整 outerHTML（截断到 3000 字符）
+    firstItemHtml: firstItemHtml ? firstItemHtml.slice(0, 3000) : null,
   };
 });
