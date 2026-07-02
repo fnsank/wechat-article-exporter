@@ -18,12 +18,10 @@ import GridArticleActions from '~/components/grid/ArticleActions.vue';
 import GridCoverTooltip from '~/components/grid/CoverTooltip.vue';
 import GridStatusBar from '~/components/grid/StatusBar.vue';
 import toastFactory from '~/composables/toast';
-import { IMAGE_PROXY, websiteName } from '~/config';
+import { websiteName } from '~/config';
 import { sharedGridOptions } from '~/config/shared-grid-options';
 import { articleDeleted, updateArticleStatus } from '~/store/v2/article';
-import { getCommentCache } from '~/store/v2/comment';
-import { getHtmlCache } from '~/store/v2/html';
-import { getMetadataCache, type Metadata } from '~/store/v2/metadata';
+import { type Metadata } from '~/store/v2/metadata';
 import type { Preferences } from '~/types/preferences';
 import { createBooleanColumnFilterParams, createDateColumnFilterParams } from '~/utils/grid';
 
@@ -35,28 +33,45 @@ const toast = toastFactory();
 
 // -------- 数据模型 --------
 
-interface SearchArticle {
-  // sogou 抓下来的原始字段
-  redirect_url: string; // sogou /link?url=xxx，用户点也能打开
+/**
+ * 服务端返回的原始 article shape（跟 /api/public/v1/search-articles 一致）。
+ * link 已经是解析后的真实 mp.weixin.qq.com/s?... URL（服务端在同 session 里做的
+ * 解析），解析失败时为 null。
+ */
+interface ApiArticle {
   title: string;
-  digest: string;
-  cover: string;
-  author_name: string; // 公众号名（sogou 的 all-time-y2 span）
+  abstract: string;
+  cover_url: string;
+  sogou_url: string;
+  link: string | null;
+  fakeid: string | null;
+  sn: string | null;
+  account_nickname: string;
+  create_time: number | null;
+}
+
+interface SearchArticle {
+  // 展示用
+  title: string;
+  digest: string; // = abstract
+  cover: string; // = cover_url
+  author_name: string; // = account_nickname
   create_time: number | null;
 
-  // 解析后的真实 URL 与 __biz（fakeid），未解析前为空
-  resolved_url: string | null;
-  link: string; // = resolved_url || redirect_url，供 preview / copy 使用
+  // 链接 & 标识
+  link: string; // 优先 mp URL，解析失败时 fallback 到 sogou_url，保证访问原文能用
+  mp_link: string | null; // 严格意义的真实 mp URL（用于抓取/导出/预览的严格判断）
+  sogou_url: string;
   fakeid: string;
-  aid: string;
+  aid: string; // = sn
 
-  // 下载状态
+  // 下载状态（跟文章下载页保持一致的字段命名）
   contentDownload: boolean;
   commentDownload: boolean;
   _status?: string;
   is_deleted?: boolean;
 
-  // 阅读量等（抓取 metadata 后填）
+  // metadata 抓下来后填
   readNum?: number;
   oldLikeNum?: number;
   shareNum?: number;
@@ -154,6 +169,20 @@ const columnDefs = ref<ColDef[]>([
     sort: 'desc',
   },
   {
+    headerName: '解析',
+    field: 'mp_link',
+    cellDataType: 'boolean',
+    valueGetter: p => !!p.data.mp_link,
+    cellRenderer: (p: ICellRendererParams) =>
+      p.value
+        ? '<span style="color: #16a34a;">✓ 已解析</span>'
+        : '<span style="color: #dc2626;" title="Sogou 反爬阻挡，抓取/导出不可用">✗ 未解析</span>',
+    filter: 'agSetColumnFilter',
+    filterParams: createBooleanColumnFilterParams('已解析', '未解析'),
+    minWidth: 100,
+    cellClass: 'flex justify-center items-center',
+  },
+  {
     headerName: '内容已下载',
     field: 'contentDownload',
     cellDataType: 'boolean',
@@ -208,7 +237,8 @@ const columnDefs = ref<ColDef[]>([
 
 const gridOptions: GridOptions = defu(
   {
-    getRowId: (params: GetRowIdParams) => params.data.redirect_url,
+    // 用 sogou_url 做行 ID（每条搜索结果的 sogou 跳转链是唯一的）
+    getRowId: (params: GetRowIdParams) => params.data.sogou_url,
     statusBar: {
       statusPanels: [{ statusPanel: GridStatusBar, align: 'left' }],
     },
@@ -244,22 +274,19 @@ function onSelectionChanged(evt: SelectionChangedEvent) {
   selectedArticles.value = (evt.selectedNodes || []).map(node => node.data);
 }
 
+const resolvedSelectedUrls = computed(() =>
+  selectedArticles.value.map(a => a.mp_link).filter((u): u is string => !!u)
+);
+
 // -------- 搜索 --------
 
 interface SearchResponse {
   code: number;
   err_msg?: string;
-  articles?: {
-    title: string;
-    abstract: string;
-    cover_url: string;
-    redirect_url: string;
-    account_nickname: string;
-    account_biz: string | null;
-    create_time: number | null;
-  }[];
+  articles?: ApiArticle[];
   total?: number;
   total_before_filter?: number;
+  resolved?: number;
   page?: number;
   elapsedMs?: number;
   reason?: string;
@@ -268,7 +295,7 @@ interface SearchResponse {
 const searching = ref(false);
 const searchError = ref('');
 const hasSearched = ref(false);
-const searchStats = ref({ total: 0, beforeFilter: 0, elapsedMs: 0 });
+const searchStats = ref({ total: 0, resolved: 0, elapsedMs: 0 });
 
 async function doSearch(newPage = 1) {
   const q = keyword.value.trim();
@@ -292,26 +319,26 @@ async function doSearch(newPage = 1) {
       return;
     }
     const rows: SearchArticle[] = (resp.articles || []).map(a => ({
-      redirect_url: a.redirect_url,
       title: a.title,
       digest: a.abstract,
       cover: a.cover_url,
       author_name: a.account_nickname,
       create_time: a.create_time,
-      resolved_url: null,
-      link: a.redirect_url,
-      fakeid: '',
-      aid: '',
+      // 优先用真实 mp URL，解析失败时 fallback 到 sogou_url 保证访问原文按钮不废
+      link: a.link || a.sogou_url,
+      mp_link: a.link,
+      sogou_url: a.sogou_url,
+      fakeid: a.fakeid || '',
+      aid: a.sn || '',
       contentDownload: false,
       commentDownload: false,
     }));
 
-    // 用本地 Dexie 检查是否已下载过（用 redirect_url 作 key 不匹配，等解析后再补）
     globalRowData = rows;
     gridApi.value?.setGridOption('rowData', rows);
     searchStats.value = {
       total: resp.total || 0,
-      beforeFilter: resp.total_before_filter || 0,
+      resolved: resp.resolved || 0,
       elapsedMs: resp.elapsedMs || 0,
     };
   } catch (e: any) {
@@ -319,64 +346,6 @@ async function doSearch(newPage = 1) {
   } finally {
     searching.value = false;
   }
-}
-
-// -------- Sogou 链解析 --------
-
-interface ResolveResp {
-  code: number;
-  results?: { source: string; target: string | null; error?: string }[];
-}
-
-/**
- * 批量把 sogou /link?url=xxx 解析成真实 mp.weixin.qq.com/s?... 并更新行数据。
- * 返回成功解析出 mp URL 的文章列表。
- */
-async function resolveArticles(articles: SearchArticle[]): Promise<SearchArticle[]> {
-  const pending = articles.filter(a => !a.resolved_url);
-  if (pending.length === 0) return articles;
-
-  // 每批最多 20 条，超了分批
-  const batches: string[][] = [];
-  for (let i = 0; i < pending.length; i += 20) {
-    batches.push(pending.slice(i, i + 20).map(a => a.redirect_url));
-  }
-  const map = new Map<string, string>(); // source -> target
-  for (const urls of batches) {
-    const resp = await request<ResolveResp>('/api/public/v1/resolve-sogou-url', {
-      method: 'POST',
-      body: { urls },
-    });
-    if (resp.code === 0 && Array.isArray(resp.results)) {
-      for (const r of resp.results) {
-        if (r.target) map.set(r.source, r.target);
-      }
-    }
-  }
-
-  const updated: SearchArticle[] = [];
-  for (const a of articles) {
-    if (a.resolved_url) {
-      updated.push(a);
-      continue;
-    }
-    const target = map.get(a.redirect_url);
-    if (target) {
-      const biz = target.match(/[?&]__biz=([^&]+)/)?.[1] || '';
-      const sn = target.match(/[?&]sn=([^&]+)/)?.[1] || '';
-      a.resolved_url = target;
-      a.link = target;
-      a.fakeid = biz;
-      a.aid = sn;
-      // 更新 grid 里的行
-      const node = gridApi.value?.getRowNode(a.redirect_url);
-      if (node) node.updateData(a);
-      updated.push(a);
-    } else {
-      updated.push(a);
-    }
-  }
-  return updated;
 }
 
 // -------- 预览 & 复制 & 抓取 & 导出 --------
@@ -388,7 +357,7 @@ function preview(article: SearchArticle) {
 
 const copied = ref(false);
 function copySelectedLinks() {
-  const links = selectedArticles.value.map(a => a.link).join('\n');
+  const links = selectedArticles.value.map(a => a.mp_link || a.sogou_url).join('\n');
   if (!links) return;
   navigator.clipboard.writeText(links);
   copied.value = true;
@@ -396,6 +365,14 @@ function copySelectedLinks() {
 }
 
 const preferences = usePreferences();
+
+function updateRowByLink(url: string, patch: Partial<SearchArticle>) {
+  const article = globalRowData.find(a => a.mp_link === url || a.link === url);
+  if (!article) return;
+  Object.assign(article, patch);
+  const node = gridApi.value?.getRowNode(article.sogou_url);
+  if (node) node.updateData(article);
+}
 
 const {
   loading: downloadBtnLoading,
@@ -405,58 +382,38 @@ const {
   stop: stopDownload,
 } = useDownloader({
   onContent(url: string) {
-    const article = globalRowData.find(a => a.link === url);
-    if (article) {
-      article.contentDownload = true;
-      article._status = '正常';
-      article.is_deleted = false;
-      updateRow(article);
+    updateRowByLink(url, { contentDownload: true, _status: '正常', is_deleted: false });
+    updateArticleStatus(url, '正常');
+    articleDeleted(url, false);
+  },
+  onStatusChange(url: string, status: string) {
+    updateRowByLink(url, { _status: status });
+    updateArticleStatus(url, status);
+  },
+  onDelete(url: string) {
+    updateRowByLink(url, { is_deleted: true, _status: '已删除' });
+    updateArticleStatus(url, '已删除');
+    articleDeleted(url);
+  },
+  onMetadata(url: string, metadata: Metadata) {
+    const patch: Partial<SearchArticle> = {
+      readNum: metadata.readNum,
+      oldLikeNum: metadata.oldLikeNum,
+      shareNum: metadata.shareNum,
+      likeNum: metadata.likeNum,
+      commentNum: metadata.commentNum,
+    };
+    if ((preferences.value as unknown as Preferences).downloadConfig.metadataOverrideContent) {
+      patch.contentDownload = true;
+      patch._status = '正常';
+      patch.is_deleted = false;
       updateArticleStatus(url, '正常');
       articleDeleted(url, false);
     }
-  },
-  onStatusChange(url: string, status: string) {
-    const article = globalRowData.find(a => a.link === url);
-    if (article) {
-      article._status = status;
-      updateRow(article);
-      updateArticleStatus(url, status);
-    }
-  },
-  onDelete(url: string) {
-    const article = globalRowData.find(a => a.link === url);
-    if (article) {
-      article.is_deleted = true;
-      article._status = '已删除';
-      updateRow(article);
-      updateArticleStatus(url, '已删除');
-      articleDeleted(url);
-    }
-  },
-  onMetadata(url: string, metadata: Metadata) {
-    const article = globalRowData.find(a => a.link === url);
-    if (article) {
-      article.readNum = metadata.readNum;
-      article.oldLikeNum = metadata.oldLikeNum;
-      article.shareNum = metadata.shareNum;
-      article.likeNum = metadata.likeNum;
-      article.commentNum = metadata.commentNum;
-      if ((preferences.value as unknown as Preferences).downloadConfig.metadataOverrideContent) {
-        article.contentDownload = true;
-        article._status = '正常';
-        updateArticleStatus(url, '正常');
-        article.is_deleted = false;
-        articleDeleted(url, false);
-      }
-      updateRow(article);
-    }
+    updateRowByLink(url, patch);
   },
   onComment(url: string) {
-    const article = globalRowData.find(a => a.link === url);
-    if (article) {
-      article.commentDownload = true;
-      updateRow(article);
-    }
+    updateRowByLink(url, { commentDownload: true });
   },
 });
 
@@ -468,33 +425,28 @@ const {
   exportFile,
 } = useExporter();
 
-function updateRow(article: SearchArticle) {
-  const node = gridApi.value?.getRowNode(article.redirect_url);
-  if (node) node.updateData(article);
+function fireDownload(type: 'html' | 'metadata' | 'comment') {
+  const urls = resolvedSelectedUrls.value;
+  if (urls.length === 0) {
+    toast.error('无可用链接', '所选行都未解析出真实 mp 链接，无法抓取');
+    return;
+  }
+  if (urls.length < selectedArticles.value.length) {
+    toast.warning('部分行跳过', `${urls.length}/${selectedArticles.value.length} 条已解析可用`);
+  }
+  download(type, urls);
 }
 
-const resolving = ref(false);
-
-async function ensureResolvedThen(cb: (urls: string[]) => void) {
-  if (selectedArticles.value.length === 0) return;
-  resolving.value = true;
-  try {
-    const resolved = await resolveArticles(selectedArticles.value);
-    const urls = resolved.map(a => a.resolved_url || '').filter(u => !!u);
-    if (urls.length === 0) {
-      toast.error('解析失败', '所选行都无法解析成微信原文链接，可能触发 Sogou 反爬');
-      return;
-    }
-    if (urls.length < selectedArticles.value.length) {
-      toast.warning(
-        '部分解析失败',
-        `${urls.length}/${selectedArticles.value.length} 条成功，其余可能因 Sogou 反爬跳过`
-      );
-    }
-    cb(urls);
-  } finally {
-    resolving.value = false;
+function fireExport(format: 'excel' | 'json' | 'html' | 'text' | 'markdown') {
+  const urls = resolvedSelectedUrls.value;
+  if (urls.length === 0) {
+    toast.error('无可用链接', '所选行都未解析出真实 mp 链接，无法导出');
+    return;
   }
+  if (urls.length < selectedArticles.value.length) {
+    toast.warning('部分行跳过', `${urls.length}/${selectedArticles.value.length} 条已解析可用`);
+  }
+  exportFile(format, urls);
 }
 
 // -------- 分页 --------
@@ -564,22 +516,16 @@ function goPage(delta: number) {
               { label: '阅读量 (需要Credential)', event: 'download-article-metadata' },
               { label: '留言内容 (需要Credential)', event: 'download-article-comment' },
             ]"
-            @download-article-html="ensureResolvedThen(urls => download('html', urls))"
-            @download-article-metadata="ensureResolvedThen(urls => download('metadata', urls))"
-            @download-article-comment="ensureResolvedThen(urls => download('comment', urls))"
+            @download-article-html="fireDownload('html')"
+            @download-article-metadata="fireDownload('metadata')"
+            @download-article-comment="fireDownload('comment')"
           >
             <UButton
-              :loading="downloadBtnLoading || resolving"
+              :loading="downloadBtnLoading"
               :disabled="selectedArticles.length === 0"
               color="white"
               class="font-mono"
-              :label="
-                downloadBtnLoading
-                  ? `抓取中 ${downloadCompletedCount}/${downloadTotalCount}`
-                  : resolving
-                  ? '解析中...'
-                  : '抓取'
-              "
+              :label="downloadBtnLoading ? `抓取中 ${downloadCompletedCount}/${downloadTotalCount}` : '抓取'"
               trailing-icon="i-heroicons-chevron-down-20-solid"
             />
           </ButtonGroup>
@@ -592,24 +538,18 @@ function goPage(delta: number) {
               { label: 'Txt', event: 'export-article-text' },
               { label: 'Markdown', event: 'export-article-markdown' },
             ]"
-            @export-article-excel="ensureResolvedThen(urls => exportFile('excel', urls))"
-            @export-article-json="ensureResolvedThen(urls => exportFile('json', urls))"
-            @export-article-html="ensureResolvedThen(urls => exportFile('html', urls))"
-            @export-article-text="ensureResolvedThen(urls => exportFile('text', urls))"
-            @export-article-markdown="ensureResolvedThen(urls => exportFile('markdown', urls))"
+            @export-article-excel="fireExport('excel')"
+            @export-article-json="fireExport('json')"
+            @export-article-html="fireExport('html')"
+            @export-article-text="fireExport('text')"
+            @export-article-markdown="fireExport('markdown')"
           >
             <UButton
-              :loading="exportBtnLoading || resolving"
+              :loading="exportBtnLoading"
               :disabled="selectedArticles.length === 0"
               color="white"
               class="font-mono"
-              :label="
-                exportBtnLoading
-                  ? `${exportPhase} ${exportCompletedCount}/${exportTotalCount}`
-                  : resolving
-                  ? '解析中...'
-                  : '导出'
-              "
+              :label="exportBtnLoading ? `${exportPhase} ${exportCompletedCount}/${exportTotalCount}` : '导出'"
               trailing-icon="i-heroicons-chevron-down-20-solid"
             />
           </ButtonGroup>
@@ -623,10 +563,7 @@ function goPage(delta: number) {
           />
 
           <div v-if="hasSearched && !searching && !searchError" class="text-xs text-slate-500 ml-auto">
-            {{ searchStats.total }} 条 · {{ searchStats.elapsedMs }}ms
-            <span v-if="searchStats.beforeFilter > searchStats.total" class="text-slate-400">
-              (原始 {{ searchStats.beforeFilter }})
-            </span>
+            {{ searchStats.total }} 条 · {{ searchStats.resolved }} 已解析 · {{ searchStats.elapsedMs }}ms
           </div>
         </div>
 
