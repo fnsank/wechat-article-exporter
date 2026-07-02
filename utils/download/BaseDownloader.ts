@@ -33,10 +33,21 @@ export class BaseDownloader {
   constructor(urls: string[], options: DownloadOptions = {}) {
     this.validateInputs(urls);
 
-    const proxies = (preferences.value as Preferences).privateProxyList || [];
+    let proxies = (preferences.value as Preferences).privateProxyList || [];
     if (proxies.length === 0) {
       // 如果没有配置私有代理，则使用公共代理
       proxies.push(...PUBLIC_PROXY_LIST);
+    }
+
+    // Sogou 签名式 URL（?src=11&...&signature=...&new=1）会被 5/6 的公共代理
+    // 家族直接 403 拒绝，只有 worker-proxy.cyou 一家 200 放行。默认按字母序
+    // 挑代理时前 80 个都命中坏代理，MAX_RETRIES=3 用完文章就失败了。
+    // 检测到 sogou 签名 URL 就把 worker-proxy.cyou 家族排到最前面。
+    const looksSogouSigned = urls.some(u => /[?&]src=11\b/.test(u) && /[?&]signature=/.test(u));
+    if (looksSogouSigned) {
+      const cyou = proxies.filter(p => p.includes('worker-proxy.cyou') && !p.includes('worker-proxys'));
+      const others = proxies.filter(p => !cyou.includes(p));
+      proxies = [...cyou, ...others];
     }
 
     this.urls = [...urls].reverse();
