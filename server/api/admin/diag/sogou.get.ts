@@ -97,6 +97,33 @@ export default defineEventHandler(async event => {
   const firstItem = $('.news-list > li').first();
   const firstItemHtml = firstItem.length ? $.html(firstItem) : null;
 
+  // 拿出第一条结果的 /link?url=xxx 跳转链，跟着解析一次，看 sogou 返回什么
+  let linkResolve: any = null;
+  const firstLink = firstItem.find('h3 a, h4 a').first().attr('href');
+  if (firstLink) {
+    const linkUrl = firstLink.startsWith('/') ? `https://weixin.sogou.com${firstLink}` : firstLink;
+    try {
+      const linkResp = await fetch(linkUrl, {
+        method: 'GET',
+        headers: BROWSER_HEADERS,
+        redirect: 'follow',
+      });
+      const linkHtml = await linkResp.text();
+      linkResolve = {
+        requestedUrl: linkUrl,
+        finalUrl: linkResp.url,
+        redirected: linkResp.redirected,
+        status: linkResp.status,
+        contentType: linkResp.headers.get('content-type'),
+        contentLength: linkHtml.length,
+        setCookieCount: linkResp.headers.getSetCookie().length,
+        htmlSnippet: linkHtml.slice(0, 2500),
+      };
+    } catch (e: any) {
+      linkResolve = { error: String(e?.message || e) };
+    }
+  }
+
   return {
     ...analysis,
     keyword: q,
@@ -109,9 +136,9 @@ export default defineEventHandler(async event => {
     contentLength: html.length,
     setCookieCount: response.headers.getSetCookie().length,
     elapsedMs: Date.now() - started,
-    // 前 500 字节的原始 HTML 片段，方便人工判断
     htmlSnippet: html.slice(0, 500),
-    // 第一条 <li> 完整 outerHTML（截断到 3000 字符）
     firstItemHtml: firstItemHtml ? firstItemHtml.slice(0, 3000) : null,
+    // 追踪 sogou 跳转链解析行为
+    linkResolve,
   };
 });
